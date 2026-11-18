@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>차량 룸 보정 측정</title>
+<style>
+  :root { --bg:#111; --card:#1b1b1b; --line:#343434; --text:#f5f5f5; --muted:#9a9a9a; --blue:#0070f3; --warn:#ffb020; --bad:#ff5c5c; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 22px; margin: 8px 0 16px; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  label { display:block; color: var(--muted); font-size: 14px; margin: 10px 0 4px; }
+  select, textarea, button { width:100%; font: inherit; color: var(--text); background:#222; border:1px solid var(--line); border-radius:8px; padding:10px; }
+  textarea { min-height: 80px; font-family: ui-monospace, monospace; font-size: 13px; }
+  button { background: var(--blue); border-color: var(--blue); font-weight: 600; margin-top: 10px; min-height: 48px; }
+  button.secondary { background:#222; border-color: var(--line); }
+  button:disabled { opacity: .45; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .warn { color: var(--warn); font-size: 14px; }
+  .bad { color: var(--bad); font-size: 14px; }
+  .ok { color: #3ddc84; font-size: 14px; }
+  ol { padding-left: 20px; margin: 6px 0; }
+  .code { font: 700 26px/1.3 ui-monospace, monospace; letter-spacing: 1px; text-align:center; padding: 14px 6px; background:#000; border-radius: 8px; word-break: break-all; }
+  canvas { width: 100%; height: 220px; background:#000; border-radius: 8px; margin-top: 8px; }
+  .meter { height: 10px; background:#000; border-radius: 5px; overflow:hidden; margin-top:8px; }
+  .meter > div { height: 100%; width: 0; background: var(--blue); transition: width .1s; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  td, th { border-bottom: 1px solid var(--line); padding: 4px 2px; text-align: right; }
+  td:first-child, th:first-child { text-align: left; }
+</style>
+</head>
+<body>
+<main>
+  <h1>차량 룸 보정 측정</h1>
+
+  <section>
+    <h2>준비</h2>
+    <ol class="muted">
+      <li>안전한 곳에 정차(P)하고, 공조 바람은 약하게, 창문은 닫습니다.</li>
+      <li>헤드유닛 <b>EQ 앱 → 룸 보정</b>을 엽니다. 측정 신호는 헤드유닛이 재생하므로 폰을 차량 BT에 연결할 필요는 없습니다. 폰에서 음악이 재생 중이면 멈추세요.</li>
+      <li>운전석에 앉아 폰을 <b>머리 높이</b>에 들고, 마이크(하단)가 앞 유리 쪽을 향하게 합니다. 폴더블은 펼친 상태로 측정하세요.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>1. 설정</h2>
+    <label for="phone">폰 기종 (마이크 특성 보정)</label>
+    <select id="phone"></select>
+    <div id="phoneNote" class="muted"></div>
+    <textarea id="custom" placeholder='{"name":"UMIK 비교 측정","points":[[20,-12],[100,0],[8000,1]],"low":60,"high":10000}' hidden></textarea>
+    <label for="target">목표 곡선</label>
+    <select id="target"></select>
+    <label for="runs">측정 위치 수 (머리 위치를 조금씩 옮겨 평균)</label>
+    <select id="runs"><option value="1">1회</option><option value="2">2회</option><option value="3" selected>3회 (권장)</option></select>
+  </section>
+
+  <section>
+    <h2>2. 마이크</h2>
+    <button id="micBtn">마이크 사용 허용</button>
+    <label for="device">입력 장치</label>
+    <select id="device" disabled></select>
+    <div id="micInfo" class="muted"></div>
+    <div class="meter"><div id="meter"></div></div>
+  </section>
+
+  <section>
+    <h2>3. 측정 <span id="pos" class="muted"></span></h2>
+    <ol class="muted">
+      <li>헤드유닛 EQ 앱의 측정 신호를 <b>끈 상태</b>에서 [배경 소음 측정]</li>
+      <li>EQ 앱에서 <b>[측정 신호 재생]</b>을 누르고 소리가 나오면 [신호 측정]</li>
+    </ol>
+    <button id="bgBtn" disabled>배경 소음 측정 (3초)</button>
+    <button id="sigBtn" disabled>신호 측정 (8초)</button>
+    <div id="measureMsg" class="muted"></div>
+    <canvas id="chart" width="600" height="220"></canvas>
+  </section>
+
+  <section id="result" hidden>
+    <h2>4. 결과 코드</h2>
+    <div class="muted">헤드유닛 EQ 앱 → 룸 보정 → 결과 코드 입력에 아래 25자를 입력하세요.</div>
+    <div id="code" class="code"></div>
+    <div id="resultNote" class="muted"></div>
+    <table id="table"></table>
+    <button id="againBtn" class="secondary">처음부터 다시 측정</button>
+  </section>
+  <p class="muted">처리는 모두 이 폰 안에서 하며 녹음은 저장·전송하지 않습니다.</p>
+</main>
+
+<script>
+/*
+ * Room correction core (browser + Node). Pure functions, no DOM.
+ * - pinkNoise: periodic pink noise with exactly equal power per proportional band (same algorithm as the
+ *   head-unit generator in eq20app RoomNoise.java).
+ * - bandLevels: Welch PSD (Hann, 50% overlap) summed into the 20 half-octave eq20 bands, in dB.
+ * - correction: measured (noise minus background, minus mic profile) -> 20 band corrections in 1 dB steps.
+ * - encode/decode: 25-character Crockford base32 result code typed into the EQ app.
+ */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) {
+        module.exports = factory();
+    } else {
+        root.RoomCorr = factory();
+    }
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    var CENTERS = [22, 31, 44, 63, 88, 125, 177, 250, 355, 500, 710, 1000, 1400, 2000, 2800, 4000, 5600, 8000, 11000, 16000];
+    var MIN_DB = -12, MAX_DB = 6, LOW_MAX_DB = 3, LOW_EDGE_HZ = 63;
+    var CODE_VERSION = 1;
+
+    /** Target curves (dB at the band centers) relative to the 250 Hz-4 kHz average. */
+    var TARGETS = [
+        { id: 0, name: '플랫', db: CENTERS.map(function () { return 0; }) },
+        // gentle in-car house curve: some low-end lift, slight top roll-off
+        { id: 1, name: '차량 기본(하우스 커브)', db: CENTERS.map(function (f) {
+            if (f <= 63) return 3;
+            if (f < 250) return 3 * Math.log(250 / f) / Math.log(250 / 63);
+            if (f <= 4000) return 0;
+            return -2 * Math.log(f / 4000) / Math.log(16000 / 4000);
+        }) },
+        { id: 2, name: '저음 강조', db: CENTERS.map(function (f) {
+            if (f <= 63) return 3;
+            if (f < 355) return 5 * Math.log(355 / f) / Math.log(355 / 63);
+            return 0;
+        }) }
+    ];
+
+    function maxDb(band) {
+        return CENTERS[band] <= LOW_EDGE_HZ ? LOW_MAX_DB : MAX_DB;
+    }
+
+    // ---------- FFT (in-place iterative radix-2, complex) ----------
+    function fft(re, im, inverse) {
+        var n = re.length, i, j, k, len, half, ang, wr, wi, cr, ci, tr, ti, ur, ui;
+        for (i = 1, j = 0; i < n; i++) {
+            var bit = n >> 1;
+            for (; j & bit; bit >>= 1) j ^= bit;
+            j ^= bit;
+            if (i < j) {
+                tr = re[i]; re[i] = re[j]; re[j] = tr;
+                ti = im[i]; im[i] = im[j]; im[j] = ti;
+            }
+        }
+        for (len = 2; len <= n; len <<= 1) {
+            half = len >> 1;
+            ang = (inverse ? 2 : -2) * Math.PI / len;
+            wr = Math.cos(ang); wi = Math.sin(ang);
+            for (i = 0; i < n; i += len) {
+                cr = 1; ci = 0;
+                for (k = 0; k < half; k++) {
+                    ur = re[i + k]; ui = im[i + k];
+                    tr = re[i + k + half] * cr - im[i + k + half] * ci;
+                    ti = re[i + k + half] * ci + im[i + k + half] * cr;
+                    re[i + k] = ur + tr; im[i + k] = ui + ti;
+                    re[i + k + half] = ur - tr; im[i + k + half] = ui - ti;
+                    var nr = cr * wr - ci * wi;
+                    ci = cr * wi + ci * wr;
+                    cr = nr;
+                }
+            }
+        }
+        if (inverse) {
+            for (i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+        }
+    }
+
+    /** Deterministic PRNG (mulberry32) so browser and tests generate identical noise. */
+    function rng(seed) {
+        var a = seed >>> 0;
+        return function () {
+            a = (a + 0x6D2B79F5) >>> 0;
+            var t = a;
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
+    /**
+     * Periodic pink noise of n samples (power of two): flat-magnitude random-phase spectrum shaped 1/sqrt(f)
+     * between loHz and hiHz, so each proportional band carries equal power. Normalized to rmsDb dBFS.
+     */
+    function pinkNoise(n, rate, seed, rmsDb, loHz, hiHz) {
+        var re = new Float64Array(n), im = new Float64Array(n), r = rng(seed || 1), i;
+        loHz = loHz || 18; hiHz = hiHz || 20000;
+        for (i = 1; i < n / 2; i++) {
+            var f = i * rate / n;
+            if (f < loHz || f > hiHz) continue;
+            var mag = 1 / Math.sqrt(f), ph = 2 * Math.PI * r();
+            re[i] = mag * Math.cos(ph); im[i] = mag * Math.sin(ph);
+            re[n - i] = re[i]; im[n - i] = -im[i];
+        }
+        fft(re, im, true);
+        var sum = 0;
+        for (i = 0; i < n; i++) sum += re[i] * re[i];
+        var gain = Math.pow(10, (rmsDb === undefined ? -18 : rmsDb) / 20) / Math.sqrt(sum / n);
+        var out = new Float32Array(n);
+        for (i = 0; i < n; i++) out[i] = re[i] * gain;
+        return out;
+    }
+
+    function bandEdges(fc) {
+        return [fc * Math.pow(2, -0.25), fc * Math.pow(2, 0.25)];
+    }
+
+    /** Band power (dB re full scale) of mono samples, Welch averaging with a Hann window of fftSize. */
+    function bandLevels(samples, rate, fftSize) {
+        var n = fftSize || 32768;
+        while (n > samples.length && n > 1024) n >>= 1;
+        var hop = n >> 1, win = new Float64Array(n), wsum = 0, i, s;
+        for (i = 0; i < n; i++) { win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / n); wsum += win[i] * win[i]; }
+        var psd = new Float64Array(n / 2 + 1), segs = 0;
+        var re = new Float64Array(n), im = new Float64Array(n);
+        for (s = 0; s + n <= samples.length; s += hop) {
+            for (i = 0; i < n; i++) { re[i] = samples[s + i] * win[i]; im[i] = 0; }
+            fft(re, im, false);
+            for (i = 0; i <= n / 2; i++) psd[i] += re[i] * re[i] + im[i] * im[i];
+            segs++;
+        }
+        if (!segs) throw new Error('recording too short');
+        var levels = [];
+        for (var b = 0; b < CENTERS.length; b++) {
+            var e = bandEdges(CENTERS[b]), p = 0;
+            var lo = Math.max(1, Math.ceil(e[0] * n / rate)), hi = Math.min(n / 2, Math.floor(e[1] * n / rate));
+            for (i = lo; i <= hi; i++) p += psd[i] * (i === n / 2 ? 1 : 2);
+            // mean-square power of the band; nothing in the band (above Nyquist) -> -Infinity
+            levels.push(hi >= lo ? 10 * Math.log10(p / (segs * wsum * n) + 1e-30) : -Infinity);
+        }
+        return levels;
+    }
+
+    function peakDb(samples) {
+        var m = 0;
+        for (var i = 0; i < samples.length; i++) { var a = Math.abs(samples[i]); if (a > m) m = a; }
+        return 20 * Math.log10(m + 1e-12);
+    }
+
+    /** Mic profile value (dB, positive = mic reads high) at f by log-frequency interpolation of points. */
+    function micDb(profile, f) {
+        var pts = profile && profile.points;
+        if (!pts || !pts.length) return 0;
+        if (f <= pts[0][0]) return pts[0][1];
+        if (f >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+        for (var i = 1; i < pts.length; i++) {
+            if (f <= pts[i][0]) {
+                var t = Math.log(f / pts[i - 1][0]) / Math.log(pts[i][0] / pts[i - 1][0]);
+                return pts[i - 1][1] + t * (pts[i][1] - pts[i - 1][1]);
+            }
+        }
+        return 0;
+    }
+
+    function powSub(totalDb, noiseDb) {
+        var d = Math.pow(10, totalDb / 10) - Math.pow(10, noiseDb / 10);
+        return d > 0 ? 10 * Math.log10(d) : -Infinity;
+    }
+
+    /**
+     * runs: [{signal: levels[20], background: levels[20]}] (several mic positions are averaged in power).
+     * Returns per band: corrected response, correction dB (1 dB steps, AMP limits), and why a band was skipped.
+     */
+    function correction(runs, profile, targetId, opts) {
+        opts = opts || {};
+        var minSnr = opts.minSnr || 10, boostShare = opts.boostShare === undefined ? 0.5 : opts.boostShare;
+        var target = TARGETS[targetId] || TARGETS[0];
+        var lo = (profile && profile.low) || 40, hi = (profile && profile.high) || 16000;
+        var bands = [], b, r;
+        for (b = 0; b < CENTERS.length; b++) {
+            var sumP = 0, snrMin = Infinity;
+            for (r = 0; r < runs.length; r++) {
+                var snr = runs[r].signal[b] - runs[r].background[b];
+                snrMin = Math.min(snrMin, snr);
+                sumP += Math.pow(10, powSub(runs[r].signal[b], runs[r].background[b]) / 10);
+            }
+            var level = 10 * Math.log10(sumP / runs.length + 1e-30) - micDb(profile, CENTERS[b]);
+            var reason = null;
+            if (CENTERS[b] < lo || CENTERS[b] > hi) reason = 'mic-range';
+            else if (!(snrMin >= minSnr)) reason = 'low-snr';
+            bands.push({ hz: CENTERS[b], level: level, snr: snrMin, reason: reason });
+        }
+        var ref = 0, n = 0;
+        for (b = 0; b < bands.length; b++) {
+            if (bands[b].hz >= 250 && bands[b].hz <= 4000 && !bands[b].reason) { ref += bands[b].level; n++; }
+        }
+        if (n < 4) throw new Error('not enough valid mid bands (check level / background noise)');
+        ref /= n;
+        var raw = bands.map(function (x, i) {
+            x.deviation = x.reason ? null : x.level - ref;
+            return x.reason ? null : target.db[i] - x.deviation;
+        });
+        // light 3-band smoothing over valid neighbours: do not chase narrow peaks and nulls
+        var smooth = raw.map(function (v, i) {
+            if (v === null) return null;
+            var acc = 0.5 * v, w = 0.5;
+            [i - 1, i + 1].forEach(function (j) {
+                if (j >= 0 && j < raw.length && raw[j] !== null) { acc += 0.25 * raw[j]; w += 0.25; }
+            });
+            return acc / w;
+        });
+        bands.forEach(function (x, i) {
+            var v = smooth[i];
+            if (v === null) { x.correction = 0; return; }
+            if (v > 0) v *= boostShare; // fill dips only partly: boosting into a null wastes amplifier headroom
+            v = Math.max(MIN_DB, Math.min(maxDb(i), Math.round(v)));
+            x.correction = v === 0 ? 0 : v;
+        });
+        return { bands: bands, reference: ref, correction: bands.map(function (x) { return x.correction; }) };
+    }
+
+    // ---------- result code ----------
+    var ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford base32
+
+    function crc8(bytes) {
+        var c = 0;
+        for (var i = 0; i < bytes.length; i++) {
+            c ^= bytes[i];
+            for (var k = 0; k < 8; k++) c = c & 0x80 ? ((c << 1) ^ 0x07) & 0xff : (c << 1) & 0xff;
+        }
+        return c;
+    }
+
+    /** bits: version 4, target 3, profile 6, 20 x 5 (dB + 12, 0..18), crc8 over the preceding 113 bits -> 121 bits, 25 chars. */
+    function encode(correctionDb, targetId, profileId) {
+        var bits = [];
+        function put(v, w) { for (var i = w - 1; i >= 0; i--) bits.push((v >> i) & 1); }
+        put(CODE_VERSION, 4); put(targetId, 3); put(profileId, 6);
+        correctionDb.forEach(function (v, i) {
+            if (v < MIN_DB || v > maxDb(i) || v !== Math.round(v)) throw new Error('band ' + i + ' out of range: ' + v);
+            put(v - MIN_DB, 5);
+        });
+        put(crc8(toBytes(bits)), 8);
+        while (bits.length % 5) bits.push(0);
+        var s = '';
+        for (var i = 0; i < bits.length; i += 5) {
+            var v = 0;
+            for (var k = 0; k < 5; k++) v = (v << 1) | bits[i + k];
+            s += ALPHABET[v];
+        }
+        return s.replace(/(.{5})(?=.)/g, '$1-');
+    }
+
+    function toBytes(bits) {
+        var out = [];
+        for (var i = 0; i < bits.length; i += 8) {
+            var v = 0;
+            for (var k = 0; k < 8; k++) v = (v << 1) | (bits[i + k] || 0);
+            out.push(v);
+        }
+        return out;
+    }
+
+    function normalizeCode(code) {
+        return String(code).toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+    }
+
+    /** Returns {version, target, profile, correction[20]} or throws on a typo (bad character, length or CRC). */
+    function decode(code) {
+        var s = normalizeCode(code), bits = [], i, k;
+        if (s.length !== 25) throw new Error('code must have 25 characters');
+        for (i = 0; i < s.length; i++) {
+            var v = ALPHABET.indexOf(s[i]);
+            if (v < 0) throw new Error('bad character ' + s[i]);
+            for (k = 4; k >= 0; k--) bits.push((v >> k) & 1);
+        }
+        var pos = 0;
+        function get(w) { var v = 0; for (var j = 0; j < w; j++) v = (v << 1) | bits[pos++]; return v; }
+        var version = get(4), target = get(3), profile = get(6), corr = [];
+        for (i = 0; i < 20; i++) corr.push(get(5) + MIN_DB);
+        var crc = get(8);
+        if (get(4) !== 0) throw new Error('checksum mismatch (typo in the last character?)');
+        if (crc !== crc8(toBytes(bits.slice(0, 113)))) throw new Error('checksum mismatch (typo?)');
+        if (version !== CODE_VERSION) throw new Error('unsupported code version ' + version);
+        for (i = 0; i < 20; i++) if (corr[i] > maxDb(i)) throw new Error('band ' + i + ' above limit');
+        return { version: version, target: target, profile: profile, correction: corr };
+    }
+
+    return {
+        CENTERS: CENTERS, TARGETS: TARGETS, MIN_DB: MIN_DB, MAX_DB: MAX_DB, LOW_MAX_DB: LOW_MAX_DB,
+        maxDb: maxDb, fft: fft, pinkNoise: pinkNoise, bandLevels: bandLevels, peakDb: peakDb, micDb: micDb,
+        correction: correction, encode: encode, decode: decode, normalizeCode: normalizeCode, crc8: crc8
+    };
+});
+
+</script>
+<script>
+/*
+ * Phone microphone profiles for room correction. Values are dB at frequency points, positive = the mic reads
+ * high; the analyzer subtracts them. 'low'/'high' bound the bands that are corrected at all.
+ *
+ * Honesty note (research 2026-11-18): no published per-model frequency response was found for any listed phone,
+ * including the Galaxy Z Flip5. The only verified requirement is Android CDD 5.4.2 (voice recognition capture:
+ * SHOULD be flat +-3 dB 100 Hz-4 kHz). Each phone therefore uses its maker's family ESTIMATE:
+ *  - Samsung: default capture path high-pass modelled as 2nd-order Butterworth at 80 Hz, slight lift 5.6-8 kHz;
+ *    11 and 16 kHz too uncertain -> not corrected (high = 8 kHz); 63 Hz and below not corrected (low = 88 Hz).
+ *  - iPhone: high-pass ~50 Hz, flat mid band; corrected 63 Hz-8 kHz.
+ *  - Pixel: high-pass ~65 Hz, slight lift at 8 kHz; corrected 88 Hz-8 kHz.
+ * Replace a family estimate with a measured profile (calibrated reference mic, e.g. UMIK-1) through the
+ * custom profile (id 63) as soon as one exists. Profile ids are part of the result code: never renumber.
+ */
+(function (root, factory) {
+    if (typeof module === 'object' && module.exports) {
+        module.exports = factory();
+    } else {
+        root.RoomMics = factory();
+    }
+})(typeof self !== 'undefined' ? self : this, function () {
+    'use strict';
+
+    var FREQS = [22, 31, 44, 63, 88, 125, 177, 250, 355, 500, 710, 1000, 1400, 2000, 2800, 4000, 5600, 8000, 11000, 16000];
+
+    function hpf(fc, f) {
+        return -10 * Math.log10(1 + Math.pow(fc / f, 4));
+    }
+
+    function family(fc, hf) {
+        return FREQS.map(function (f) {
+            var v = hpf(fc, f) + (hf[f] || 0);
+            return [f, Math.round(v * 10) / 10];
+        });
+    }
+
+    var FAMILIES = {
+        samsung: { points: family(80, { 5600: 1, 8000: 1 }), low: 88, high: 8000 },
+        iphone: { points: family(50, {}), low: 63, high: 8000 },
+        pixel: { points: family(65, { 8000: 1 }), low: 88, high: 8000 },
+        flat: { points: [], low: 40, high: 16000 }
+    };
+
+    // id, name, family, model regex for UA Client Hints (Android) or null
+    var PHONES = [
+        [0, '보정 없음 (마이크 평탄 가정)', 'flat', null],
+        [1, 'Galaxy Z Flip5', 'samsung', /^SM-F731/],
+        [2, 'Galaxy Z Flip6', 'samsung', /^SM-F741/],
+        [3, 'Galaxy Z Fold5', 'samsung', /^SM-F946/],
+        [4, 'Galaxy Z Fold6', 'samsung', /^SM-F956/],
+        [5, 'Galaxy S23', 'samsung', /^SM-S911/],
+        [6, 'Galaxy S23 Ultra', 'samsung', /^SM-S918/],
+        [7, 'Galaxy S24', 'samsung', /^SM-S921/],
+        [8, 'Galaxy S24 Ultra', 'samsung', /^SM-S928/],
+        [9, 'Galaxy S25', 'samsung', /^SM-S931/],
+        [10, 'Galaxy S25 Ultra', 'samsung', /^SM-S938/],
+        [11, 'Galaxy A54', 'samsung', /^SM-A546/],
+        [12, 'Galaxy A55', 'samsung', /^SM-A556/],
+        [13, 'iPhone 13 / 14 (Pro 포함)', 'iphone', null],
+        [14, 'iPhone 15 / 16 (Pro 포함)', 'iphone', null],
+        [15, 'Pixel 7 / 8 (Pro 포함)', 'pixel', /^Pixel [78]/],
+        [16, 'Pixel 9 (Pro 포함)', 'pixel', /^Pixel 9/]
+    ];
+    var CUSTOM_ID = 63;
+
+    var profiles = PHONES.map(function (p) {
+        var f = FAMILIES[p[2]];
+        return {
+            id: p[0], name: p[1], family: p[2], model: p[3], points: f.points, low: f.low, high: f.high,
+            confidence: p[2] === 'flat' ? '없음' : '추정(제조사 계열 공통, 기종별 실측 아님)'
+        };
+    });
+
+    function byId(id) {
+        for (var i = 0; i < profiles.length; i++) if (profiles[i].id === id) return profiles[i];
+        return null;
+    }
+
+    /** Profile for an Android model string from navigator.userAgentData, or null. */
+    function detect(model) {
+        if (!model) return null;
+        for (var i = 0; i < profiles.length; i++) {
+            if (profiles[i].model && profiles[i].model.test(model)) return profiles[i];
+        }
+        return null;
+    }
+
+    /**
+     * Custom measured profile: JSON {"name":..., "points":[[hz,dB],...], "low":hz, "high":hz}, points ascending,
+     * |dB| <= 30, 20 Hz-20 kHz. Returns the profile (id 63) or throws.
+     */
+    function custom(json) {
+        var o = typeof json === 'string' ? JSON.parse(json) : json;
+        if (!o || !Array.isArray(o.points) || o.points.length < 2 || o.points.length > 200) throw new Error('points: 2..200 entries');
+        var last = 0;
+        o.points.forEach(function (p) {
+            if (!Array.isArray(p) || p.length !== 2 || !(p[0] >= 20 && p[0] <= 20000) || !(Math.abs(p[1]) <= 30) || p[0] <= last) {
+                throw new Error('each point [hz, dB]: 20-20000 Hz ascending, |dB| <= 30');
+            }
+            last = p[0];
+        });
+        var low = o.low || o.points[0][0], high = o.high || o.points[o.points.length - 1][0];
+        if (!(low >= 20 && high <= 20000 && low < high)) throw new Error('low/high out of range');
+        return { id: CUSTOM_ID, name: '사용자 정의: ' + String(o.name || '측정 프로필').slice(0, 40), family: 'custom',
+            points: o.points, low: low, high: high, confidence: '사용자 측정' };
+    }
+
+    return { profiles: profiles, byId: byId, detect: detect, custom: custom, CUSTOM_ID: CUSTOM_ID, hpf: hpf };
+});
+
+</script>
+<script>
+(function () {
+  'use strict';
+  var RC = window.RoomCorr, Mics = window.RoomMics;
+  var $ = function (id) { return document.getElementById(id); };
+  var ctx = null, stream = null, source = null, proc = null, sink = null;
+  var recording = null, levelDb = -120;
+  var runsDone = [], pendingBg = null;
+
+  // ---- settings ----
+  Mics.profiles.forEach(function (p) { $('phone').add(new Option(p.name, p.id)); });
+  $('phone').add(new Option('사용자 정의 (직접 측정한 프로필 붙여넣기)', Mics.CUSTOM_ID));
+  RC.TARGETS.forEach(function (t) { $('target').add(new Option(t.name, t.id)); });
+  $('target').value = '1';
+
+  function profile() {
+    var id = +$('phone').value;
+    if (id === Mics.CUSTOM_ID) return Mics.custom($('custom').value);
+    return Mics.byId(id);
+  }
+  function showProfile() {
+    var custom = +$('phone').value === Mics.CUSTOM_ID;
+    $('custom').hidden = !custom;
+    try {
+      var p = profile();
+      $('phoneNote').textContent = '신뢰도: ' + p.confidence + ' · 보정 대역 ' + p.low + ' Hz ~ ' + (p.high / 1000) + ' kHz (그 밖은 보정하지 않음)';
+      $('phoneNote').className = 'muted';
+    } catch (e) {
+      $('phoneNote').textContent = custom ? '프로필 JSON 오류: ' + e.message : e.message;
+      $('phoneNote').className = 'bad';
+    }
+  }
+  $('phone').onchange = showProfile;
+  $('custom').oninput = showProfile;
+  (function detect() {
+    var set = function (p) { if (p) { $('phone').value = p.id; } showProfile(); };
+    if (/iPhone/.test(navigator.userAgent)) return set(Mics.byId(14));
+    if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+      navigator.userAgentData.getHighEntropyValues(['model']).then(function (v) { set(Mics.detect(v.model)); }, function () { set(null); });
+    } else {
+      var m = /Android [^;]+; ([^;)]+)/.exec(navigator.userAgent);
+      set(m ? Mics.detect(m[1].trim()) : null);
+    }
+  })();
+
+  // ---- microphone ----
+  var CONSTRAINTS = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 };
+
+  function isBluetooth(label) { return /blue|\bbt\b|hfp|sco|headset|hands.?free/i.test(label || ''); }
+
+  function openMic(deviceId) {
+    var c = Object.assign({}, CONSTRAINTS);
+    if (deviceId) c.deviceId = { exact: deviceId };
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    return navigator.mediaDevices.getUserMedia({ audio: c, video: false }).then(function (s) {
+      stream = s;
+      if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+      if (ctx.state === 'suspended') ctx.resume();
+      if (source) source.disconnect();
+      source = ctx.createMediaStreamSource(s);
+      if (!proc) {
+        proc = ctx.createScriptProcessor(4096, 1, 1);
+        sink = ctx.createGain();
+        sink.gain.value = 0; // keep the processor running without playing anything
+        proc.connect(sink); sink.connect(ctx.destination);
+        proc.onaudioprocess = function (e) {
+          var x = e.inputBuffer.getChannelData(0), sum = 0;
+          for (var i = 0; i < x.length; i++) sum += x[i] * x[i];
+          levelDb = 10 * Math.log10(sum / x.length + 1e-12);
+          $('meter').style.width = Math.max(0, Math.min(100, (levelDb + 80) * 1.25)) + '%';
+          if (recording) recording.push(new Float32Array(x));
+        };
+      }
+      source.connect(proc);
+      return describe(s);
+    });
+  }
+
+  function describe(s) {
+    var t = s.getAudioTracks()[0], st = t.getSettings ? t.getSettings() : {};
+    var rate = ctx.sampleRate, msg = [], cls = 'muted';
+    msg.push('장치: ' + (t.label || '기본 마이크'));
+    msg.push('샘플레이트 ' + rate + ' Hz');
+    ['echoCancellation', 'noiseSuppression', 'autoGainControl'].forEach(function (k) {
+      if (st[k] === true) { msg.push(k + ' 켜짐(측정 왜곡 가능)'); cls = 'warn'; }
+    });
+    if (isBluetooth(t.label)) { msg.push('블루투스/차량 마이크로 보입니다. 폰 내장 마이크를 선택하세요'); cls = 'bad'; }
+    if (rate < 32000) { msg.push('샘플레이트가 낮습니다(통화 모드?). 고음 측정 불가'); cls = 'bad'; }
+    $('micInfo').textContent = msg.join(' · ');
+    $('micInfo').className = cls;
+    return navigator.mediaDevices.enumerateDevices().then(function (list) {
+      var sel = $('device'), cur = st.deviceId;
+      sel.innerHTML = '';
+      list.filter(function (d) { return d.kind === 'audioinput'; }).forEach(function (d, i) {
+        var o = new Option((d.label || ('마이크 ' + (i + 1))) + (isBluetooth(d.label) ? ' (블루투스: 사용 안 함)' : ''), d.deviceId);
+        sel.add(o);
+      });
+      if (cur) sel.value = cur;
+      sel.disabled = false;
+      $('bgBtn').disabled = false;
+    });
+  }
+
+  $('micBtn').onclick = function () {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      $('micInfo').textContent = '이 브라우저에서는 마이크를 쓸 수 없습니다. HTTPS 주소나 폰에 저장한 파일로 여세요.';
+      $('micInfo').className = 'bad';
+      return;
+    }
+    openMic(null).catch(function (e) { $('micInfo').textContent = '마이크 사용 실패: ' + e.message; $('micInfo').className = 'bad'; });
+  };
+  $('device').onchange = function () { openMic($('device').value).catch(function (e) { $('micInfo').textContent = e.message; }); };
+
+  function record(seconds, skipSeconds) {
+    return new Promise(function (resolve) {
+      recording = [];
+      var total = seconds + skipSeconds, start = Date.now();
+      var timer = setInterval(function () {
+        var left = Math.ceil(total - (Date.now() - start) / 1000);
+        $('measureMsg').textContent = '측정 중... ' + Math.max(0, left) + '초 (움직이지 마세요)';
+        $('measureMsg').className = 'muted';
+      }, 200);
+      setTimeout(function () {
+        clearInterval(timer);
+        var chunks = recording; recording = null;
+        var n = chunks.reduce(function (a, c) { return a + c.length; }, 0), out = new Float32Array(n), o = 0;
+        chunks.forEach(function (c) { out.set(c, o); o += c.length; });
+        resolve(out.subarray(Math.min(out.length, Math.round(skipSeconds * ctx.sampleRate))));
+      }, total * 1000);
+    });
+  }
+
+  function setBusy(b) { ['bgBtn', 'sigBtn', 'device'].forEach(function (id) { $(id).disabled = b; }); }
+
+  function posLabel() { $('pos').textContent = '(위치 ' + (runsDone.length + 1) + ' / ' + $('runs').value + ')'; }
+  posLabel();
+  $('runs').onchange = posLabel;
+
+  $('bgBtn').onclick = function () {
+    setBusy(true);
+    record(3, 0.5).then(function (x) {
+      pendingBg = RC.bandLevels(x, ctx.sampleRate);
+      $('measureMsg').textContent = '배경 소음 측정 완료. 이제 EQ 앱에서 측정 신호를 재생하고 [신호 측정]을 누르세요.';
+      setBusy(false);
+      $('sigBtn').disabled = false;
+      draw(null, pendingBg);
+    });
+  };
+
+  $('sigBtn').onclick = function () {
+    setBusy(true);
+    record(8, 1).then(function (x) {
+      setBusy(false);
+      var sig = RC.bandLevels(x, ctx.sampleRate), peak = RC.peakDb(x);
+      var mid = [];
+      for (var b = 0; b < 20; b++) if (RC.CENTERS[b] >= 250 && RC.CENTERS[b] <= 4000) mid.push(sig[b] - pendingBg[b]);
+      var rise = mid.reduce(function (a, v) { return a + v; }, 0) / mid.length;
+      draw(sig, pendingBg);
+      if (peak > -1) {
+        $('measureMsg').textContent = '입력이 너무 큽니다(클리핑). 차 볼륨을 낮추고 이 위치를 다시 측정하세요.';
+        $('measureMsg').className = 'bad';
+        return;
+      }
+      if (rise < 15) {
+        $('measureMsg').textContent = '신호가 배경 소음보다 ' + rise.toFixed(0) + ' dB만 큽니다(15 dB 이상 필요). 측정 신호가 재생 중인지, 볼륨을 조금 올렸는지 확인 후 다시 측정하세요.';
+        $('measureMsg').className = 'bad';
+        return;
+      }
+      runsDone.push({ signal: sig, background: pendingBg });
+      pendingBg = null;
+      $('sigBtn').disabled = true;
+      if (runsDone.length < +$('runs').value) {
+        posLabel();
+        $('measureMsg').textContent = '저장했습니다(배경 대비 +' + rise.toFixed(0) + ' dB). 머리 위치를 10~20 cm 옮기고, EQ 앱 신호를 끈 뒤 다시 [배경 소음 측정]부터 하세요.';
+        $('measureMsg').className = 'ok';
+      } else {
+        finish();
+      }
+    });
+  };
+
+  function finish() {
+    try {
+      var p = profile(), target = +$('target').value;
+      var res = RC.correction(runsDone, p, target);
+      $('code').textContent = RC.encode(res.correction, target, p.id);
+      var skipped = res.bands.filter(function (b) { return b.reason; }).map(function (b) {
+        return (b.hz >= 1000 ? b.hz / 1000 + 'k' : b.hz) + (b.reason === 'low-snr' ? '(소음)' : '(마이크 범위 밖)');
+      });
+      $('resultNote').textContent = '프로필: ' + p.name + ' · ' + p.confidence +
+        (skipped.length ? ' · 보정하지 않은 밴드: ' + skipped.join(', ') : '');
+      var rows = '<tr><th>Hz</th><th>측정 편차</th><th>보정</th><th>SNR</th></tr>';
+      res.bands.forEach(function (b) {
+        rows += '<tr><td>' + b.hz + '</td><td>' + (b.deviation === null ? '-' : b.deviation.toFixed(1)) + '</td><td>' +
+          (b.correction > 0 ? '+' : '') + b.correction + '</td><td>' + (isFinite(b.snr) ? b.snr.toFixed(0) : '-') + '</td></tr>';
+      });
+      $('table').innerHTML = rows;
+      $('result').hidden = false;
+      $('measureMsg').textContent = '측정 완료. EQ 앱의 측정 신호를 끄세요.';
+      $('measureMsg').className = 'ok';
+      drawResult(res);
+      $('result').scrollIntoView({ behavior: 'smooth' });
+    } catch (e) {
+      $('measureMsg').textContent = '계산 실패: ' + e.message;
+      $('measureMsg').className = 'bad';
+    }
+  }
+
+  $('againBtn').onclick = function () {
+    runsDone = []; pendingBg = null; $('result').hidden = true; posLabel();
+    $('measureMsg').textContent = ''; $('sigBtn').disabled = true;
+  };
+
+  // ---- charts ----
+  function axes(g, w, h, lo, hi) {
+    g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
+    g.strokeStyle = '#343434'; g.fillStyle = '#9a9a9a'; g.font = '11px sans-serif';
+    for (var v = lo; v <= hi; v += (hi - lo) / 4) {
+      var y = h - 20 - (v - lo) / (hi - lo) * (h - 30);
+      g.beginPath(); g.moveTo(30, y); g.lineTo(w, y); g.stroke();
+      g.fillText(Math.round(v), 2, y + 4);
+    }
+    RC.CENTERS.forEach(function (f, i) {
+      if (i % 2 === 0) g.fillText(f >= 1000 ? f / 1000 + 'k' : f, 30 + i * (w - 30) / 20, h - 4);
+    });
+  }
+  function y(v, lo, hi, h) { return h - 20 - (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo) * (h - 30); }
+
+  function draw(sig, bg) {
+    var c = $('chart'), g = c.getContext('2d'), w = c.width, h = c.height, lo = -100, hi = -20;
+    axes(g, w, h, lo, hi);
+    var col = (w - 30) / 20;
+    [[bg, '#666'], [sig, '#0070f3']].forEach(function (s) {
+      if (!s[0]) return;
+      g.strokeStyle = s[1]; g.lineWidth = 2; g.beginPath();
+      s[0].forEach(function (v, i) { var X = 30 + i * col + col / 2, Y = y(v, lo, hi, h); if (i) g.lineTo(X, Y); else g.moveTo(X, Y); });
+      g.stroke();
+    });
+  }
+
+  function drawResult(res) {
+    var c = $('chart'), g = c.getContext('2d'), w = c.width, h = c.height, lo = -12, hi = 12;
+    axes(g, w, h, lo, hi);
+    var col = (w - 30) / 20, zero = y(0, lo, hi, h);
+    res.bands.forEach(function (b, i) {
+      var X = 30 + i * col + col * 0.2;
+      g.fillStyle = b.reason ? '#333' : '#0070f3';
+      var Y = y(b.correction, lo, hi, h);
+      g.fillRect(X, Math.min(Y, zero), col * 0.6, Math.max(2, Math.abs(Y - zero)));
+    });
+    g.strokeStyle = '#f5f5f5'; g.lineWidth = 2; g.beginPath();
+    var first = true;
+    res.bands.forEach(function (b, i) {
+      if (b.deviation === null) { first = true; return; }
+      var X = 30 + i * col + col / 2, Y = y(b.deviation, lo, hi, h);
+      if (first) g.moveTo(X, Y); else g.lineTo(X, Y);
+      first = false;
+    });
+    g.stroke();
+    g.fillStyle = '#9a9a9a'; g.fillText('흰선: 측정 편차, 파란 막대: 보정', 36, 14);
+  }
+})();
+</script>
+</body>
+</html>
