@@ -80,8 +80,13 @@
 
   <section id="result" hidden>
     <h2>4. 결과 코드</h2>
-    <div class="muted">헤드유닛 EQ 앱 → 룸 보정 → 결과 코드 입력에 아래 25자를 입력하세요.</div>
-    <div id="code" class="code"></div>
+    <div class="muted">헤드유닛 EQ 앱 → 룸 보정 → 결과 코드 입력에 아래 36자를 입력하세요. 1/3 옥타브 측정값이 들어 있어
+      헤드유닛이 20밴드·파라메트릭 모두에 맞춰 보정을 계산합니다.</div>
+    <div id="code2" class="code"></div>
+    <details>
+      <summary class="muted">이전 버전 EQ 앱용 25자 코드 (36자 코드가 거부될 때)</summary>
+      <div id="code" class="code"></div>
+    </details>
     <div id="resultNote" class="muted"></div>
     <table id="table"></table>
     <button id="againBtn" class="secondary">처음부터 다시 측정</button>
@@ -95,8 +100,12 @@
  * - pinkNoise: periodic pink noise with exactly equal power per proportional band (same algorithm as the
  *   head-unit generator in eq20app RoomNoise.java).
  * - bandLevels: Welch PSD (Hann, 50% overlap) summed into the 20 half-octave eq20 bands, in dB.
- * - correction: measured (noise minus background, minus mic profile) -> 20 band corrections in 1 dB steps.
- * - encode/decode: 25-character Crockford base32 result code typed into the EQ app.
+ * - correction: measured (noise minus background, minus mic profile) -> 20 band corrections in 1 dB steps
+ *   (code version 1, for EQ apps before 2026-11-26).
+ * - measurement: the same, but the measured deviation on 31 third-octave points (20 Hz..20 kHz), shrunk where
+ *   the mic positions disagree. Code version 2 carries only this measurement; the head unit decides the
+ *   correction (20 graphic bands in 0.5 dB, parametric fit, subsonic high-pass, dip and null policy, target).
+ * - encode/decode: Crockford base32 result code typed into the EQ app (v1 25 characters, v2 36 characters).
  */
 (function (root, factory) {
     if (typeof module === 'object' && module.exports) {
@@ -109,24 +118,32 @@
 
     var CENTERS = [22, 31, 44, 63, 88, 125, 177, 250, 355, 500, 710, 1000, 1400, 2000, 2800, 4000, 5600, 8000, 11000, 16000];
     var MIN_DB = -12, MAX_DB = 6, LOW_MAX_DB = 3, LOW_EDGE_HZ = 63;
-    var CODE_VERSION = 1;
+    var CODE_VERSION = 1, CODE2_VERSION = 2;
+    /** Third-octave points of the v2 measurement: 1000 * 2^(k/3), k = -17..13 (19.7 Hz..20.2 kHz). */
+    var THIRD = [];
+    for (var k3 = -17; k3 <= 13; k3++) THIRD.push(1000 * Math.pow(2, k3 / 3));
+    var DEV_MIN = -16, DEV_MAX = 14, DEV_INVALID = 15; // 5 bits per point, 1 dB steps
 
-    /** Target curves (dB at the band centers) relative to the 250 Hz-4 kHz average. */
-    var TARGETS = [
-        { id: 0, name: '플랫', db: CENTERS.map(function () { return 0; }) },
+    /** Target curves (dB) relative to the 250 Hz-4 kHz average. Must match RoomCorrection.java. */
+    var TARGET_FNS = [
+        function () { return 0; },
         // gentle in-car house curve: some low-end lift, slight top roll-off
-        { id: 1, name: '차량 기본(하우스 커브)', db: CENTERS.map(function (f) {
+        function (f) {
             if (f <= 63) return 3;
             if (f < 250) return 3 * Math.log(250 / f) / Math.log(250 / 63);
             if (f <= 4000) return 0;
             return -2 * Math.log(f / 4000) / Math.log(16000 / 4000);
-        }) },
-        { id: 2, name: '저음 강조', db: CENTERS.map(function (f) {
+        },
+        function (f) {
             if (f <= 63) return 3;
             if (f < 355) return 5 * Math.log(355 / f) / Math.log(355 / 63);
             return 0;
-        }) }
+        }
     ];
+    var TARGET_NAMES = ['플랫', '차량 기본(하우스 커브)', '저음 강조'];
+    var TARGETS = TARGET_NAMES.map(function (name, id) {
+        return { id: id, name: name, fn: TARGET_FNS[id], db: CENTERS.map(TARGET_FNS[id]) };
+    });
 
     function maxDb(band) {
         return CENTERS[band] <= LOW_EDGE_HZ ? LOW_MAX_DB : MAX_DB;
@@ -202,12 +219,11 @@
         return out;
     }
 
-    function bandEdges(fc) {
-        return [fc * Math.pow(2, -0.25), fc * Math.pow(2, 0.25)];
-    }
-
-    /** Band power (dB re full scale) of mono samples, Welch averaging with a Hann window of fftSize. */
-    function bandLevels(samples, rate, fftSize) {
+    /** Band power (dB re full scale) of mono samples, Welch averaging with a Hann window of fftSize.
+     *  centers/halfOct default to the 20 eq20 bands (half-octave wide); THIRD with 1/6 gives third octaves. */
+    function bandLevels(samples, rate, fftSize, centers, halfOct) {
+        centers = centers || CENTERS;
+        halfOct = halfOct || 0.25;
         var n = fftSize || 32768;
         while (n > samples.length && n > 1024) n >>= 1;
         var hop = n >> 1, win = new Float64Array(n), wsum = 0, i, s;
@@ -222,8 +238,8 @@
         }
         if (!segs) throw new Error('recording too short');
         var levels = [];
-        for (var b = 0; b < CENTERS.length; b++) {
-            var e = bandEdges(CENTERS[b]), p = 0;
+        for (var b = 0; b < centers.length; b++) {
+            var e = [centers[b] * Math.pow(2, -halfOct), centers[b] * Math.pow(2, halfOct)], p = 0;
             var lo = Math.max(1, Math.ceil(e[0] * n / rate)), hi = Math.min(n / 2, Math.floor(e[1] * n / rate));
             for (i = lo; i <= hi; i++) p += psd[i] * (i === n / 2 ? 1 : 2);
             // mean-square power of the band; nothing in the band (above Nyquist) -> -Infinity
@@ -310,6 +326,41 @@
         return { bands: bands, reference: ref, correction: bands.map(function (x) { return x.correction; }) };
     }
 
+    /**
+     * v2 measurement. runs: [{signal3, background3}] third-octave levels per mic position.
+     * Per point: level (power average over positions, background removed, mic profile removed), deviation from
+     * the 250 Hz-4 kHz mean, spread (dB, max-min over positions) and why a point is invalid. Where positions
+     * disagree the deviation is local to one head position, so it is shrunk: x 1 / (1 + (spread / 4)^2).
+     * Returns {points, deviation[31] (dB, null = invalid)}.
+     */
+    function measurement(runs, profile, opts) {
+        opts = opts || {};
+        var minSnr = opts.minSnr || 10;
+        var lo = (profile && profile.low) || 40, hi = (profile && profile.high) || 16000;
+        var pts = THIRD.map(function (f, b) {
+            var sumP = 0, snrMin = Infinity, lv = [];
+            runs.forEach(function (r) {
+                snrMin = Math.min(snrMin, r.signal3[b] - r.background3[b]);
+                var l = powSub(r.signal3[b], r.background3[b]);
+                lv.push(l);
+                sumP += Math.pow(10, l / 10);
+            });
+            var finite = lv.filter(isFinite);
+            var spread = finite.length > 1 ? Math.max.apply(null, finite) - Math.min.apply(null, finite) : 0;
+            var reason = f < lo || f > hi ? 'mic-range' : !(snrMin >= minSnr) ? 'low-snr' : null;
+            return { hz: f, level: 10 * Math.log10(sumP / runs.length + 1e-30) - micDb(profile, f), snr: snrMin,
+                spread: spread, reason: reason };
+        });
+        var mid = pts.filter(function (p) { return !p.reason && p.hz >= 250 && p.hz <= 4000; });
+        if (mid.length < 8) throw new Error('not enough valid mid bands (check level / background noise)');
+        var ref = mid.reduce(function (a, p) { return a + p.level; }, 0) / mid.length;
+        pts.forEach(function (p) {
+            if (p.reason) { p.deviation = null; return; }
+            p.deviation = (p.level - ref) / (1 + Math.pow(p.spread / 4, 2));
+        });
+        return { points: pts, reference: ref, deviation: pts.map(function (p) { return p.deviation; }) };
+    }
+
     // ---------- result code ----------
     var ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford base32
 
@@ -356,10 +407,64 @@
         return String(code).toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
     }
 
-    /** Returns {version, target, profile, correction[20]} or throws on a typo (bad character, length or CRC). */
+    /**
+     * v2 measurement code: version 4 (=2), target 3, profile 6, 31 x 5 bits (deviation dB + 16, 0..30; 31 = not
+     * measured), crc8 over the preceding 168 bits -> 176 bits + 4 zero bits = 36 characters (6 groups of 6).
+     */
+    function encode2(deviation, targetId, profileId) {
+        var bits = [];
+        function put(v, w) { for (var i = w - 1; i >= 0; i--) bits.push((v >> i) & 1); }
+        if (deviation.length !== THIRD.length) throw new Error('need ' + THIRD.length + ' points');
+        put(CODE2_VERSION, 4); put(targetId, 3); put(profileId, 6);
+        deviation.forEach(function (v) {
+            var q = v === null || v === undefined || !isFinite(v) ? DEV_INVALID
+                : Math.max(DEV_MIN, Math.min(DEV_MAX, Math.round(v)));
+            put(q - DEV_MIN, 5);
+        });
+        put(crc8(toBytes(bits)), 8);
+        while (bits.length % 5) bits.push(0);
+        var s = '';
+        for (var i = 0; i < bits.length; i += 5) {
+            var v = 0;
+            for (var k = 0; k < 5; k++) v = (v << 1) | bits[i + k];
+            s += ALPHABET[v];
+        }
+        return s.replace(/(.{6})(?=.)/g, '$1-');
+    }
+
+    /** Length of a code from its first character (it holds the version): v2 -> 36, else 25. */
+    function codeLength(code) {
+        var s = normalizeCode(code);
+        return s.length && ALPHABET.indexOf(s[0]) >> 1 === CODE2_VERSION ? 36 : 25;
+    }
+
+    function decode2(s) {
+        var bits = [], i, k;
+        for (i = 0; i < s.length; i++) {
+            var v = ALPHABET.indexOf(s[i]);
+            if (v < 0) throw new Error('bad character ' + s[i]);
+            for (k = 4; k >= 0; k--) bits.push((v >> k) & 1);
+        }
+        var pos = 0;
+        function get(w) { var v = 0; for (var j = 0; j < w; j++) v = (v << 1) | bits[pos++]; return v; }
+        var version = get(4), target = get(3), profile = get(6), dev = [];
+        for (i = 0; i < THIRD.length; i++) {
+            var q = get(5) + DEV_MIN;
+            dev.push(q === DEV_INVALID ? null : q + 0);
+        }
+        var crc = get(8);
+        if (get(4) !== 0) throw new Error('checksum mismatch (typo in the last character?)');
+        if (crc !== crc8(toBytes(bits.slice(0, 168)))) throw new Error('checksum mismatch (typo?)');
+        if (version !== CODE2_VERSION) throw new Error('unsupported code version ' + version);
+        return { version: version, target: target, profile: profile, deviation: dev };
+    }
+
+    /** v1: {version, target, profile, correction[20]}; v2: {version, target, profile, deviation[31]}.
+     *  Throws on a typo (bad character, length or CRC). */
     function decode(code) {
         var s = normalizeCode(code), bits = [], i, k;
-        if (s.length !== 25) throw new Error('code must have 25 characters');
+        if (s.length === 36) return decode2(s);
+        if (s.length !== 25) throw new Error('code must have 25 or 36 characters');
         for (i = 0; i < s.length; i++) {
             var v = ALPHABET.indexOf(s[i]);
             if (v < 0) throw new Error('bad character ' + s[i]);
@@ -378,9 +483,10 @@
     }
 
     return {
-        CENTERS: CENTERS, TARGETS: TARGETS, MIN_DB: MIN_DB, MAX_DB: MAX_DB, LOW_MAX_DB: LOW_MAX_DB,
+        CENTERS: CENTERS, THIRD: THIRD, TARGETS: TARGETS, MIN_DB: MIN_DB, MAX_DB: MAX_DB, LOW_MAX_DB: LOW_MAX_DB,
         maxDb: maxDb, fft: fft, pinkNoise: pinkNoise, bandLevels: bandLevels, peakDb: peakDb, micDb: micDb,
-        correction: correction, encode: encode, decode: decode, normalizeCode: normalizeCode, crc8: crc8
+        correction: correction, measurement: measurement, encode: encode, encode2: encode2, decode: decode,
+        codeLength: codeLength, normalizeCode: normalizeCode, crc8: crc8
     };
 });
 
@@ -504,7 +610,7 @@
   var $ = function (id) { return document.getElementById(id); };
   var ctx = null, stream = null, source = null, proc = null, sink = null;
   var recording = null, levelDb = -120;
-  var runsDone = [], pendingBg = null;
+  var runsDone = [], pendingBg = null, pendingBg3 = null;
 
   // ---- settings ----
   Mics.profiles.forEach(function (p) { $('phone').add(new Option(p.name, p.id)); });
@@ -639,6 +745,7 @@
     setBusy(true);
     record(3, 0.5).then(function (x) {
       pendingBg = RC.bandLevels(x, ctx.sampleRate);
+      pendingBg3 = RC.bandLevels(x, ctx.sampleRate, 32768, RC.THIRD, 1 / 6);
       $('measureMsg').textContent = '배경 소음 측정 완료. 이제 EQ 앱에서 측정 신호를 재생하고 [신호 측정]을 누르세요.';
       setBusy(false);
       $('sigBtn').disabled = false;
@@ -651,6 +758,7 @@
     record(8, 1).then(function (x) {
       setBusy(false);
       var sig = RC.bandLevels(x, ctx.sampleRate), peak = RC.peakDb(x);
+      var sig3 = RC.bandLevels(x, ctx.sampleRate, 32768, RC.THIRD, 1 / 6);
       var mid = [];
       for (var b = 0; b < 20; b++) if (RC.CENTERS[b] >= 250 && RC.CENTERS[b] <= 4000) mid.push(sig[b] - pendingBg[b]);
       var rise = mid.reduce(function (a, v) { return a + v; }, 0) / mid.length;
@@ -665,7 +773,7 @@
         $('measureMsg').className = 'bad';
         return;
       }
-      runsDone.push({ signal: sig, background: pendingBg });
+      runsDone.push({ signal: sig, background: pendingBg, signal3: sig3, background3: pendingBg3 });
       pendingBg = null;
       $('sigBtn').disabled = true;
       if (runsDone.length < +$('runs').value) {
@@ -683,11 +791,15 @@
       var p = profile(), target = +$('target').value;
       var res = RC.correction(runsDone, p, target);
       $('code').textContent = RC.encode(res.correction, target, p.id);
+      var meas = RC.measurement(runsDone, p);
+      $('code2').textContent = RC.encode2(meas.deviation, target, p.id);
+      var unsure = meas.points.filter(function (q) { return !q.reason && q.spread > 6; }).length;
       var skipped = res.bands.filter(function (b) { return b.reason; }).map(function (b) {
         return (b.hz >= 1000 ? b.hz / 1000 + 'k' : b.hz) + (b.reason === 'low-snr' ? '(소음)' : '(마이크 범위 밖)');
       });
       $('resultNote').textContent = '프로필: ' + p.name + ' · ' + p.confidence +
-        (skipped.length ? ' · 보정하지 않은 밴드: ' + skipped.join(', ') : '');
+        (skipped.length ? ' · 보정하지 않은 밴드: ' + skipped.join(', ') : '') +
+        (unsure ? ' · 위치마다 차이가 큰 지점 ' + unsure + '곳은 약하게 반영됩니다' : '');
       var rows = '<tr><th>Hz</th><th>측정 편차</th><th>보정</th><th>SNR</th></tr>';
       res.bands.forEach(function (b) {
         rows += '<tr><td>' + b.hz + '</td><td>' + (b.deviation === null ? '-' : b.deviation.toFixed(1)) + '</td><td>' +
@@ -706,7 +818,7 @@
   }
 
   $('againBtn').onclick = function () {
-    runsDone = []; pendingBg = null; $('result').hidden = true; posLabel();
+    runsDone = []; pendingBg = null; pendingBg3 = null; $('result').hidden = true; posLabel();
     $('measureMsg').textContent = ''; $('sigBtn').disabled = true;
   };
 
